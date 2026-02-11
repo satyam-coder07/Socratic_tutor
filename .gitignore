@@ -1,0 +1,12 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Vector Database folders
+project_vault/
+socratic_db/
+vector_store/
+chroma_db/
+
+# Mac system files
+.DS_Store
