@@ -1,63 +1,88 @@
+import streamlit as st
 import chromadb
 from chromadb.utils import embedding_functions
+from groq import Groq
+import os
+
+
+st.set_page_config(page_title="Socratic Study Buddy", layout="centered")
+st.title("Socratic Study Buddy (Groq Edition)")
+
 
 ef = embedding_functions.SentenceTransformerEmbeddingFunction(
     model_name="all-MiniLM-L6-v2", 
     device="cpu"
 )
-
 client = chromadb.PersistentClient(path="./socratic_db")
-collection = client.get_or_create_collection(name="technical_docs", embedding_function=ef)
+collection = client.get_or_create_collection(name="study_material", embedding_function=ef)
 
-def seed_data():
-    if collection.count() == 0:
-        docs = [
-            "Photosynthesis is the process where plants use sunlight, water, and CO2 to create oxygen and energy in the form of sugar.",
-            "The Pythagorean theorem states that in a right-angled triangle, the square of the hypotenuse is equal to the sum of the squares of the other two sides.",
-            "Newton's Second Law of Motion defines force as mass times acceleration (F=ma)."
-        ]
-        ids = ["bio_01", "math_01", "phys_01"]
-        collection.add(documents=docs, ids=ids)
-        print("Knowledge base initialized.")
 
-def get_socratic_response(user_input, retrieved_fact):
-    pressure_keywords = ["rush", "answer", "tell me", "hurry", "fast"]
-    if any(word in user_input.lower() for word in pressure_keywords):
-        return "I understand you are in a hurry, but true learning takes time. Look at the data again: what is the relationship between the variables mentioned?"
-
-    if "photo" in user_input.lower():
-        return "Think about what a plant needs from the sky and the ground. How do you think it combines those to make its own food?"
+with st.sidebar:
+    st.header("1. Configuration")
+    api_key = st.text_input("Enter Groq API Key:", type="password")
     
-    if "pythagorean" in user_input.lower() or "triangle" in user_input.lower():
-        return "If you have a right triangle and you know the two shorter sides, what happens if you square them and add them together?"
-
-    if "force" in user_input.lower() or "newton" in user_input.lower():
-        return "Consider an object's mass. If you want it to speed up (accelerate), what do you need to apply to it?"
-
-    return "That's a deep question. Based on the text, what is the most important component involved in this process?"
-
-def run_tutor():
-    seed_data()
-    print("\n" + "="*40)
-    print("WELCOME TO THE SOCRATIC STUDY BUDDY")
-    print("="*40)
-    print("I will help you find the answer, but I will never give it to you.")
+    st.header("2. Upload Material")
+    uploaded_file = st.file_uploader("Upload a study text file (.txt)", type="txt")
     
-    while True:
-        query = input("\nStudent: ")
+    if st.button("Index Material"):
+        if uploaded_file and api_key:
+            content = uploaded_file.read().decode("utf-8")
+
+            collection.add(
+                documents=[content],
+                metadatas=[{"source": uploaded_file.name}],
+                ids=[uploaded_file.name]
+            )
+            st.success("Material indexed successfully!")
+        else:
+            st.warning("Please provide both API Key and a File.")
+
+
+st.info("Ask me anything about your uploaded material. I will guide you to the answer, but I won't give it to you!")
+
+user_query = st.text_input("What would you like to learn?")
+
+if st.button("Ask My Tutor"):
+    if not api_key:
+        st.error("Please enter your Groq API Key in the sidebar.")
+    elif collection.count() == 0:
+        st.error("Please upload and index a file first.")
+    elif user_query:
+        results = collection.query(query_texts=[user_query], n_results=1)
+        retrieved_context = results["documents"][0][0]
         
-        if query.lower() in ["exit", "quit", "bye"]:
-            print("Keep studying! Goodbye.")
-            break
+        try:
+            groq_client = Groq(api_key=api_key)
             
+            system_prompt = f"""
+            You are a Socratic Tutor. Use the provided context to guide the student.
+            
+            RULES:
+            1. NEVER provide direct answers, formulas, or definitions.
+            2. ALWAYS answer with a leading question that points to a detail in the context.
+            3. If the user is in a rush or demands the answer, politely refuse and ask a simpler question.
+            
+            CONTEXT:
+            {retrieved_context}
+            """
+            
+            completion = groq_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_query}
+                ],
+                temperature=0.5,
+                max_tokens=1024,
+            )
+            
+            tutor_response = completion.choices[0].message.content
+            
+            st.subheader("Tutor's Guidance:")
+            st.write(tutor_response)
+            
+            with st.expander("Internal Reasoning (RAG Context)"):
+                st.write(f"**Retrieved Fact:** {retrieved_context}")
 
-        results = collection.query(query_texts=[query], n_results=1)
-        fact = results["documents"][0][0]
-        
-        print(f"   [DEBUG LOG: System retrieved factual context: {fact}]")
-        
-        response = get_socratic_response(query, fact)
-        print(f"Tutor: {response}")
-
-if __name__ == "__main__":
-    run_tutor()
+        except Exception as e:
+            st.error(f"An error occurred: {e}")
